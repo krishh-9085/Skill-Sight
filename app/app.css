@@ -21,10 +21,25 @@
 html,
 body {
     @apply bg-transparent;
+    margin: 0;
+    height: 100%;
+    min-height: 100svh;
+    min-height: 100dvh;
+    background-color: transparent;
+}
+
+/* Fallback for older iOS Safari dynamic toolbar issues */
+:root {
+  --vh: 1vh;
+}
+@supports (height: 100dvh) {
+  :root { --vh: 1dvh; }
 }
 
 main {
-  @apply min-h-screen pt-10;
+  /* Use dynamic viewport height when available */
+  min-height: calc(var(--vh, 1vh) * 100);
+  @apply pt-10;
 }
 h1 {
   @apply max-sm:text-[3rem] text-6xl  text-gradient leading-tight xl:tracking-[-2px] font-semibold;
@@ -149,4 +164,6 @@ form {
 
 @layer utilities {
   .animate-fade-in { animation: fadeIn 200ms ease-out; }
+  /* Override Tailwind's min-h-screen to use dynamic viewport on iOS Safari */
+  .min-h-screen { min-height: 100svh; min-height: 100dvh; }
 }

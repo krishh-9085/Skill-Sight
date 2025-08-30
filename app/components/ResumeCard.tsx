@@ -56,7 +56,7 @@ const ResumeCard = ({
     }
 
     return (
-        <Link to={`/resume/${id}`} className="block animate-in fade-in duration-1000">
+        <Link to={`/resume/${id}`} className="block">
             <GlassSurface
                 width="100%"
                 height="auto"

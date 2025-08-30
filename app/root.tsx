@@ -34,11 +34,24 @@ export function Layout({ children }: { children: React.ReactNode }) {
     <html lang="en">
       <head>
         <meta charSet="utf-8" />
-        <meta name="viewport" content="width=device-width, initial-scale=1" />
+        <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover, shrink-to-fit=no" />
         <Meta />
         <Links />
       </head>
       <body>
+      <script
+        dangerouslySetInnerHTML={{ __html: `
+          (function(){
+            function setVh(){
+              var vh = window.innerHeight * 0.01;
+              document.documentElement.style.setProperty('--vh', vh + 'px');
+            }
+            setVh();
+            window.addEventListener('resize', setVh);
+            window.addEventListener('orientationchange', setVh);
+          })();
+        ` }}
+      />
       <script src="https://js.puter.com/v2/"></script>
       {children}
         <ScrollRestoration />

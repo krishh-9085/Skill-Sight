@@ -45,7 +45,7 @@ export const Navbar = () => {
     }
 
     return (
-        <div className="w-full flex justify-center pt-3 px-2 sm:pt-4 sm:px-4">
+        <div className="w-full flex justify-center pt-3 px-2 sm:pt-4 sm:px-4 ">
             <GlassSurface
                 width="100%"
                 height={60}
@@ -69,7 +69,7 @@ export const Navbar = () => {
 
                     <div className="flex items-center gap-2 sm:gap-3 shrink-0">
                         {/* Mobile actions: round icon buttons */}
-                        <div className="flex sm:hidden items-center gap-2">
+                        <div className="flex sm:hidden items-center gap-3  ">
                             <Link to="/upload" aria-label="Upload" title="Upload">
                                 <GlassSurface
                                     width={44}
