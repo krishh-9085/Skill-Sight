@@ -10,15 +10,33 @@ export interface PdfTextExtractionResult {
 
 let pdfjsLib: any = null;
 let loadPromise: Promise<any> | null = null;
+let workerConfigured = false;
 
 async function loadPdfJs(): Promise<any> {
     if (pdfjsLib) return pdfjsLib;
     if (loadPromise) return loadPromise;
 
-    loadPromise = import("pdfjs-dist/legacy/build/pdf.mjs").then((lib) => {
+    loadPromise = (async () => {
+        const lib = await import("pdfjs-dist/legacy/build/pdf.mjs");
+
+        if (!workerConfigured && typeof window !== "undefined") {
+            try {
+                const workerModule = await import("pdfjs-dist/legacy/build/pdf.worker.min.mjs?url");
+                const workerSrc =
+                    typeof workerModule?.default === "string" ? workerModule.default : "";
+
+                if (workerSrc && lib?.GlobalWorkerOptions) {
+                    lib.GlobalWorkerOptions.workerSrc = workerSrc;
+                    workerConfigured = true;
+                }
+            } catch (workerError) {
+                console.warn("[SkillSight:pdf2img] failed to configure pdf worker", workerError);
+            }
+        }
+
         pdfjsLib = lib;
         return lib;
-    });
+    })();
 
     return loadPromise;
 }
@@ -66,7 +84,6 @@ export async function convertPdfToImage(file: File): Promise<PdfConversionResult
         const arrayBuffer = await file.arrayBuffer();
         const pdf = await lib.getDocument({
             data: arrayBuffer,
-            disableWorker: true,
             useSystemFonts: true,
         }).promise;
 
@@ -151,7 +168,6 @@ export async function extractPdfText(
         const arrayBuffer = await file.arrayBuffer();
         const pdf = await lib.getDocument({
             data: arrayBuffer,
-            disableWorker: true,
             useSystemFonts: true,
         }).promise;
 
