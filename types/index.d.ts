@@ -9,6 +9,7 @@ interface Resume {
     id: string;
     companyName?: string;
     jobTitle?: string;
+    jobDescription?: string;
     imagePath: string;
     resumePath: string;
     feedback: Feedback;
@@ -16,6 +17,20 @@ interface Resume {
 
 interface Feedback {
     overallScore: number;
+    rubric?: {
+        roleMatch: number;
+        keywordCoverage: number;
+        experienceMatch: number;
+        impactEvidence: number;
+        formattingAndParseability: number;
+        writingQuality: number;
+    };
+    coverage?: {
+        matchedKeywords: string[];
+        missingKeywords: string[];
+        matchedRequirements: string[];
+        missingRequirements: string[];
+    };
     ATS: {
         score: number;
         tips: {

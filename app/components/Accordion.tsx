@@ -1,6 +1,7 @@
 import type { ReactNode } from "react";
-import React, { createContext, useContext, useState } from "react";
+import { createContext, useContext, useState } from "react";
 import { cn } from "~/lib/utils";
+import { ChevronDown } from "lucide-react";
 
 interface AccordionContextType {
     activeItems: string[];
@@ -27,12 +28,12 @@ interface AccordionProps {
     className?: string;
 }
 
-export const Accordion: React.FC<AccordionProps> = ({
-                                                        children,
-                                                        defaultOpen,
-                                                        allowMultiple = false,
-                                                        className = "",
-                                                    }) => {
+export const Accordion = ({
+    children,
+    defaultOpen,
+    allowMultiple = false,
+    className = "",
+}: AccordionProps) => {
     const [activeItems, setActiveItems] = useState<string[]>(
         defaultOpen ? [defaultOpen] : []
     );
@@ -55,7 +56,7 @@ export const Accordion: React.FC<AccordionProps> = ({
         <AccordionContext.Provider
             value={{ activeItems, toggleItem, isItemActive }}
         >
-            <div className={`space-y-2 ${className}`}>{children}</div>
+            <div className={cn("space-y-2", className)}>{children}</div>
         </AccordionContext.Provider>
     );
 };
@@ -66,13 +67,19 @@ interface AccordionItemProps {
     className?: string;
 }
 
-export const AccordionItem: React.FC<AccordionItemProps> = ({
-                                                                id,
-                                                                children,
-                                                                className = "",
-                                                            }) => {
+export const AccordionItem = ({
+    id,
+    children,
+    className = "",
+}: AccordionItemProps) => {
     return (
-        <div className={`overflow-hidden border-b border-gray-200 ${className}`}>
+        <div
+            id={`accordion-item-${id}`}
+            className={cn(
+                "overflow-hidden rounded-2xl border border-slate-200 bg-white/80",
+                className
+            )}
+        >
             {children}
         </div>
     );
@@ -86,33 +93,25 @@ interface AccordionHeaderProps {
     iconPosition?: "left" | "right";
 }
 
-export const AccordionHeader: React.FC<AccordionHeaderProps> = ({
-                                                                    itemId,
-                                                                    children,
-                                                                    className = "",
-                                                                    icon,
-                                                                    iconPosition = "right",
-                                                                }) => {
+export const AccordionHeader = ({
+    itemId,
+    children,
+    className = "",
+    icon,
+    iconPosition = "right",
+}: AccordionHeaderProps) => {
     const { toggleItem, isItemActive } = useAccordion();
     const isActive = isItemActive(itemId);
 
     const defaultIcon = (
-        <svg
-            className={cn("w-5 h-5 transition-transform duration-200", {
-                "rotate-180": isActive,
-            })}
-            fill="none"
-            stroke="#98A2B3"
-            viewBox="0 0 24 24"
-            xmlns="http://www.w3.org/2000/svg"
-        >
-            <path
-                strokeLinecap="round"
-                strokeLinejoin="round"
-                strokeWidth={2}
-                d="M19 9l-7 7-7-7"
+        <span className="inline-flex size-7 items-center justify-center rounded-lg bg-slate-100 text-slate-500">
+            <ChevronDown
+                className={cn("size-4", {
+                    "rotate-180": isActive,
+                })}
+                aria-hidden="true"
             />
-        </svg>
+        </span>
     );
 
     const handleClick = () => {
@@ -122,14 +121,16 @@ export const AccordionHeader: React.FC<AccordionHeaderProps> = ({
     return (
         <button
             onClick={handleClick}
-            className={`
-        w-full px-4 py-3 text-left
-        focus:outline-none
-        transition-colors duration-200 flex items-center justify-between cursor-pointer
-        ${className}
-      `}
+            aria-expanded={isActive}
+            aria-controls={`accordion-content-${itemId}`}
+            id={`accordion-header-${itemId}`}
+            className={cn(
+                "accordion-header flex w-full cursor-pointer items-center justify-between gap-3 px-4 py-3 text-left transition-colors duration-150 hover:bg-slate-50/80 focus:outline-none focus-visible:ring-4 focus-visible:ring-sky-100",
+                isActive && "accordion-header-active",
+                className
+            )}
         >
-            <div className="flex items-center space-x-3">
+            <div className="flex min-w-0 flex-1 items-center gap-3">
                 {iconPosition === "left" && (icon || defaultIcon)}
                 <div className="flex-1">{children}</div>
             </div>
@@ -144,23 +145,27 @@ interface AccordionContentProps {
     className?: string;
 }
 
-export const AccordionContent: React.FC<AccordionContentProps> = ({
-                                                                      itemId,
-                                                                      children,
-                                                                      className = "",
-                                                                  }) => {
+export const AccordionContent = ({
+    itemId,
+    children,
+    className = "",
+}: AccordionContentProps) => {
     const { isItemActive } = useAccordion();
     const isActive = isItemActive(itemId);
 
     return (
         <div
-            className={`
-        overflow-hidden transition-all duration-300 ease-in-out
-        ${isActive ? "max-h-fit opacity-100" : "max-h-0 opacity-0"}
-        ${className}
-      `}
+            id={`accordion-content-${itemId}`}
+            aria-labelledby={`accordion-header-${itemId}`}
+            role="region"
+            aria-hidden={!isActive}
+            hidden={!isActive}
+            className={cn(
+                isActive ? "block" : "hidden",
+                className
+            )}
         >
-            <div className="px-4 py-3 ">{children}</div>
+            <div className="px-4 pb-4 pt-1">{children}</div>
         </div>
     );
 };

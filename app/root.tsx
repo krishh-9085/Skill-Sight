@@ -9,50 +9,37 @@ import {
 
 import type { Route } from "./+types/root";
 import "./app.css";
-import {usePuterStore} from "~/lib/puter";
+import {useAppStore} from "~/lib/cloud";
 import {useEffect} from "react";
+import { THEME_STORAGE_KEY } from "~/hooks/useTheme";
 
-export const links: Route.LinksFunction = () => [
-  { rel: "preconnect", href: "https://fonts.googleapis.com" },
-  {
-    rel: "preconnect",
-    href: "https://fonts.gstatic.com",
-    crossOrigin: "anonymous",
-  },
-  {
-    rel: "stylesheet",
-    href: "https://fonts.googleapis.com/css2?family=Inter:ital,opsz,wght@0,14..32,100..900;1,14..32,100..900&display=swap",
-  },
-];
+export const links: Route.LinksFunction = () => [];
+const themeInitScript = `(() => {
+  try {
+    const key = "${THEME_STORAGE_KEY}";
+    let mode = localStorage.getItem(key);
+    if (mode !== "light" && mode !== "dark") {
+      mode = window.matchMedia("(prefers-color-scheme: dark)").matches ? "dark" : "light";
+    }
+    document.documentElement.setAttribute("data-theme", mode);
+    document.documentElement.style.colorScheme = mode;
+  } catch (_error) {
+    document.documentElement.setAttribute("data-theme", "light");
+    document.documentElement.style.colorScheme = "light";
+  }
+})();`;
 
 export function Layout({ children }: { children: React.ReactNode }) {
-  const { init } = usePuterStore();
-  useEffect(()=>{
-    init()
-  },[init]);
   return (
-    <html lang="en">
+    <html lang="en" data-theme="light">
       <head>
         <meta charSet="utf-8" />
         <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover, shrink-to-fit=no" />
+        <script dangerouslySetInnerHTML={{ __html: themeInitScript }} />
         <Meta />
         <Links />
       </head>
       <body>
-      <script
-        dangerouslySetInnerHTML={{ __html: `
-          (function(){
-            function setVh(){
-              var vh = window.innerHeight * 0.01;
-              document.documentElement.style.setProperty('--vh', vh + 'px');
-            }
-            setVh();
-            window.addEventListener('resize', setVh);
-            window.addEventListener('orientationchange', setVh);
-          })();
-        ` }}
-      />
-      <script src="https://js.puter.com/v2/"></script>
       {children}
         <ScrollRestoration />
         <Scripts />
@@ -61,8 +48,23 @@ export function Layout({ children }: { children: React.ReactNode }) {
   );
 }
 
+function AppBootstrap() {
+  const init = useAppStore((state) => state.init);
+
+  useEffect(() => {
+    init();
+  }, [init]);
+
+  return null;
+}
+
 export default function App() {
-  return <Outlet />;
+  return (
+    <>
+      <AppBootstrap />
+      <Outlet />
+    </>
+  );
 }
 
 export function ErrorBoundary({ error }: Route.ErrorBoundaryProps) {

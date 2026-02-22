@@ -1,92 +1,114 @@
-import Iridescence from "../../Backgrounds/Iridescence/Iridescence";
-import type {Route} from "./+types/home";
-import {Navbar} from "~/components/Navbar";
+import type { Route } from "./+types/home";
 import ResumeCard from "~/components/ResumeCard";
-import {usePuterStore} from "~/lib/puter";
-import {Link, useNavigate} from "react-router";
-import {useEffect, useState} from "react";
+import { useAppStore } from "~/lib/cloud";
+import { Link } from "react-router";
+import { useEffect, useState } from "react";
+import PageShell from "~/components/PageShell";
+import PageHeading from "~/components/PageHeading";
+import { useRequireAuth } from "~/hooks/useRequireAuth";
+import { ArrowUpRight, FileStack, Sparkles, Target } from "lucide-react";
 
 export function meta({}: Route.MetaArgs) {
     return [
-        {title: "SkillSight"},
-        {name: "description", content: "Smart feedback for your dream job!"},
+        { title: "SkillSight" },
+        { name: "description", content: "Smart feedback for your dream job!" },
     ];
 }
 
 export default function Home() {
-    const {auth, kv} = usePuterStore();
-    const navigate = useNavigate();
+    const { kv } = useAppStore();
     const [resumes, setResumes] = useState<Resume[]>([]);
     const [loadingResumes, setLoadingResumes] = useState(false);
+    const { isAuthenticated } = useRequireAuth();
 
     useEffect(() => {
-        if (!auth.isAuthenticated) navigate('/auth?next=/');
-    }, [auth.isAuthenticated])
-
-    useEffect(() => {
-        const loadResumes = async () => {
-            setLoadingResumes(true);
-
-            const resumes = (await kv.list('resume:*', true)) as KVItem[];
-
-            const parsedResumes = resumes?.map((resume) => (
-                JSON.parse(resume.value) as Resume
-            ))
-
-            setResumes(parsedResumes || []);
-            setLoadingResumes(false);
+        if (!isAuthenticated) {
+            setResumes([]);
+            return;
         }
 
-        loadResumes()
-    }, []);
+        const loadResumes = async () => {
+            setLoadingResumes(true);
+            try {
+                const resumeItems = (await kv.list('resume:*', true)) as KVItem[] | undefined;
+                const parsedResumes = (resumeItems || [])
+                    .map((resume) => {
+                        try {
+                            return JSON.parse(resume.value) as Resume;
+                        } catch {
+                            return null;
+                        }
+                    })
+                    .filter((resume): resume is Resume => Boolean(resume?.feedback && typeof resume.feedback === "object"));
+                setResumes(parsedResumes);
+            } finally {
+                setLoadingResumes(false);
+            }
+        };
 
-    return <main className="relative min-h-screen">
-        {/* Galaxy Background */}
-        <div className="absolute inset-0 w-full h-full">
-            <Iridescence
-                color={[0.5, 0.6, 0.8]}
-                mouseReact={false}
-                amplitude={0.1}
-                speed={1.0}
-            />
-        </div>
+        loadResumes();
+    }, [isAuthenticated, kv]);
 
-        {/* Content overlay */}
-        <div className="relative z-10">
-            <Navbar/>
+    const resumeCount = resumes.length;
 
-            <section className="main-section">
-                <div className="page-heading py-12 sm:py-16 px-4">
-                    <h1>Track Your Applications & Resume Ratings</h1>
-                    {!loadingResumes && resumes?.length === 0 ? (
-                        <h2>No resumes found. Upload your first resume to get feedback.</h2>
-                    ) : (
-                        <h2>Review your submissions and check AI-powered feedback.</h2>
-                    )}
+    return (
+        <PageShell>
+            <PageHeading
+                kicker="Dashboard"
+                title="Build Resume Versions That Beat ATS Filters"
+                subtitle={
+                    !loadingResumes && resumeCount === 0
+                        ? "Start your first analysis to unlock personalized resume feedback."
+                        : "Review performance trends, compare submissions, and target the highest-impact edits."
+                }
+            >
+                <div className="mt-5 flex flex-wrap items-center justify-center gap-3">
+                   
+                    <Link to="/upload" className="primary-button w-fit px-5 py-2.5">
+                        <Sparkles className="size-4" aria-hidden="true" />
+                        Analyze New Resume
+                    </Link>
                 </div>
+            </PageHeading>
 
-                {loadingResumes && (
-                    <div className="flex flex-col items-center justify-center">
-                        <img src="/images/resume-scan-2.gif" className="w-[200px]"/>
-                    </div>
-                )}
+            {loadingResumes && (
+                <div className="resumes-section w-full">
+                    {Array.from({ length: 3 }).map((_, index) => (
+                        <div key={index} className="resume-card animate-pulse">
+                            <div className="h-5 w-1/2 rounded bg-slate-200" />
+                            <div className="h-5 w-2/3 rounded bg-slate-200" />
+                            <div className="h-[320px] w-full rounded-xl bg-slate-200" />
+                            <div className="h-10 w-full rounded-xl bg-slate-200" />
+                        </div>
+                    ))}
+                </div>
+            )}
 
-                {!loadingResumes && resumes.length > 0 && (
-                    <div className="resumes-section">
-                        {resumes.map((resume) => (
-                            <ResumeCard key={resume.id} resume={resume}/>
-                        ))}
-                    </div>
-                )}
+            {!loadingResumes && resumeCount > 0 && (
+                <div className="resumes-section">
+                    {resumes.map((resume) => (
+                        <ResumeCard key={resume.id} resume={resume} />
+                    ))}
+                </div>
+            )}
 
-                {!loadingResumes && resumes?.length === 0 && (
-                    <div className="flex flex-col items-center justify-center mt-10 gap-4">
-                        <Link to="/upload" className="primary-button w-fit text-xl font-semibold">
+            {!loadingResumes && resumeCount === 0 && (
+                <div className="empty-panel">
+                    <span className="inline-flex size-14 items-center justify-center rounded-2xl bg-sky-100 text-sky-700">
+                        <FileStack className="size-7" aria-hidden="true" />
+                    </span>
+                    <h3 className="text-2xl font-semibold text-slate-900">Start with your first analysis</h3>
+                    <p className="max-w-xl text-slate-600">
+                        Upload a resume, paste the job description, and get a full ATS score plus targeted improvement guidance.
+                    </p>
+                    <div className="mt-4">
+                        <Link to="/upload" className="primary-button w-fit text-base font-semibold px-5 py-2.5">
                             Upload Resume
+                            <ArrowUpRight className="size-4" aria-hidden="true" />
                         </Link>
                     </div>
-                )}
-            </section>
-        </div>
-    </main>
+                </div>
+            )}
+        </PageShell>
+    );
 }

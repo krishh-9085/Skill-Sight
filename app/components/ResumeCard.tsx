@@ -1,144 +1,111 @@
 import { Link } from "react-router";
 import ScoreCircle from "~/components/ScoreCircle";
-import GlassSurface from "../../Animations/GlassSurface/GlassSurface";
 import { useEffect, useState } from "react";
-import { usePuterStore } from "~/lib/puter";
+import { useAppStore } from "~/lib/cloud";
+import { ArrowUpRight, FileText, ScanText } from "lucide-react";
 
 const ResumeCard = ({
-                        resume: { id, companyName, jobTitle, feedback, imagePath }
+                        resume: { id, companyName, jobTitle, feedback, resumePath, imagePath }
                     }: { resume: Resume }) => {
-    const { fs } = usePuterStore();
-    const [resumeUrl, setResumeUrl] = useState('');
-    const [isClient, setIsClient] = useState(false);
+    const { fs } = useAppStore();
+    const [previewUrl, setPreviewUrl] = useState("");
+    const [isPdfPreview, setIsPdfPreview] = useState(false);
 
     useEffect(() => {
-        setIsClient(true);
-    }, []);
+        let objectUrl = "";
+        let cancelled = false;
 
-    useEffect(() => {
         const loadResume = async () => {
-            const blob = await fs.read(imagePath);
+            const hasFallbackImage = Boolean(imagePath && /-preview\.png$/i.test(imagePath));
+            const preferredPath = !imagePath || hasFallbackImage ? resumePath : imagePath;
+            let blob = await fs.read(preferredPath);
+            let usedPath = preferredPath;
+
+            if (!blob && preferredPath !== resumePath) {
+                blob = await fs.read(resumePath);
+                usedPath = resumePath;
+            } else if (!blob && preferredPath !== imagePath && imagePath) {
+                blob = await fs.read(imagePath);
+                usedPath = imagePath;
+            }
+
             if (!blob) return;
-            let url = URL.createObjectURL(blob);
-            setResumeUrl(url);
+            objectUrl = URL.createObjectURL(blob);
+            if (!cancelled) {
+                setPreviewUrl(objectUrl);
+                setIsPdfPreview((blob.type || "").includes("pdf") || usedPath.toLowerCase().endsWith(".pdf"));
+            }
         };
 
-        loadResume()
-    }, [imagePath]);
-
-    // Fallback for server-side rendering
-    if (!isClient) {
-        return (
-            <Link to={`/resume/${id}`} className="resume-card animate-in fade-in duration-1000">
-                <div className="resume-card-header">
-                    <div className="flex flex-col gap-2">
-                        {companyName && <h2 className="!text-black font-bold break-words ">{companyName}</h2>}
-                        {jobTitle && <h3 className="text-lg break-words text-gray-500">{jobTitle}</h3>}
-                        {!companyName && !jobTitle && <h2 className="!text-black font-bold">Resume</h2>}
-                    </div>
-                    <div className="flex-shrink-0">
-                        <ScoreCircle score={feedback.overallScore} />
-                    </div>
-                </div>
-                {resumeUrl && (
-                    <div className="gradient-border animate-in fade-in duration-1000">
-                        <div className="w-full h-full">
-                            <img
-                                src={resumeUrl}
-                                alt="resume"
-                                className="w-full h-[350px] max-sm:h-[200px] object-cover object-top"
-                            />
-                        </div>
-                    </div>
-                )}
-            </Link>
-        );
-    }
+        loadResume();
+        return () => {
+            cancelled = true;
+            if (objectUrl) URL.revokeObjectURL(objectUrl);
+        };
+    }, [fs, imagePath, resumePath]);
 
     return (
-        <Link to={`/resume/${id}`} className="block">
-            <GlassSurface
-                width="100%"
-                height="auto"
-                borderRadius={50}
-                className="hover:scale-[1.02] transition-all duration-300 cursor-pointer group"
-                backgroundOpacity={0.08}
-                blur={22}
-                brightness={92}
-                opacity={0.5}
-                saturation={1.1}
-                displace={0.5}
-                distortionScale={-140}
-                redOffset={1}
-                greenOffset={3}
-                blueOffset={6}
-            >
-                <div className="w-full p-6">
-                    {/* Header Section */}
-                    <div className="flex items-start justify-between mb-6">
-                        <div className="flex flex-col gap-2 flex-1 min-w-0">
-                            {companyName && (
-                                <h2 className="text-white font-bold break-words text-xl group-hover:text-white/90 transition-colors">
-                                    {companyName}
-                                </h2>
-                            )}
-                            {jobTitle && (
-                                <h3 className="text-lg break-words text-white/70 group-hover:text-white/60 transition-colors">
-                                    {jobTitle}
-                                </h3>
-                            )}
-                            {!companyName && !jobTitle && (
-                                <h2 className="text-white font-bold text-xl">Resume</h2>
-                            )}
-                        </div>
-                        <div className="flex-shrink-0 ml-4">
-                            <ScoreCircle score={feedback.overallScore} />
-                        </div>
-                    </div>
+        <Link to={`/resume/${id}`} className="resume-card group">
+            <div className="resume-card-header gap-3">
+                <div className="flex min-w-0 flex-1 flex-col gap-1">
+                    <span className="inline-flex w-fit items-center gap-1 rounded-full border border-slate-200 bg-slate-50 px-2.5 py-1 text-[0.7rem] font-semibold uppercase tracking-[0.12em] text-slate-600">
+                        <ScanText className="size-3.5" aria-hidden="true" />
+                        ATS Snapshot
+                    </span>
 
-                    {/* Resume Image Section */}
-                    {resumeUrl && (
-                        <GlassSurface
-                            width="100%"
-                            height={350}
-                            borderRadius={16}
-                            className="animate-in fade-in  overflow-hidden group-hover:scale-[1.01] transition-transform duration-300"
-                            backgroundOpacity={0.05}
-                            blur={8}
-                            brightness={95}
-                            opacity={0.9}
-                            saturation={1.05}
-                        >
-                            <div className="w-full h-full relative overflow-hidden rounded-2xl">
-                                <img
-                                    src={resumeUrl}
-                                    alt="resume preview"
-                                    className="w-full h-full object-cover object-top group-hover:scale-105 transition-transform duration-500"
-                                />
-                                {/* Overlay gradient for better text readability */}
-                                <div className="absolute inset-0 bg-gradient-to-t from-black/20 via-transparent to-transparent opacity-0 group-hover:opacity-100 transition-opacity duration-300"></div>
-                            </div>
-                        </GlassSurface>
+                    {companyName ? (
+                        <h2 className="break-words text-xl leading-tight font-semibold text-slate-900">{companyName}</h2>
+                    ) : (
+                        <h2 className="text-xl leading-tight font-semibold text-slate-900">Resume Submission</h2>
                     )}
 
-                    {/* Loading state */}
-                    {!resumeUrl && (
-                        <GlassSurface
-                            width="100%"
-                            height={350}
-                            borderRadius={16}
-                            className="animate-pulse"
-                            backgroundOpacity={0.1}
-                            blur={10}
-                            brightness={90}
-                        >
-                            <div className="w-full h-full flex items-center justify-center">
-                                <div className="text-white/60">Loading preview...</div>
-                            </div>
-                        </GlassSurface>
+                    {jobTitle ? (
+                        <h3 className="break-words text-base leading-tight text-slate-600">{jobTitle}</h3>
+                    ) : (
+                        <h3 className="text-sm text-slate-500">No specific role attached</h3>
                     )}
                 </div>
-            </GlassSurface>
+
+                <div className="flex shrink-0 items-start">
+                    <ScoreCircle score={feedback.overallScore} size={84} />
+                </div>
+            </div>
+
+            {previewUrl ? (
+                <div className="relative h-[220px] w-full overflow-hidden rounded-2xl border border-slate-200 bg-white">
+                    <span className="absolute left-3 top-3 z-10 inline-flex items-center gap-1 rounded-full border border-white/90 bg-white/95 px-2 py-1 text-[0.66rem] font-semibold uppercase tracking-[0.12em] text-slate-600 shadow-sm">
+                        <FileText className="size-3.5" aria-hidden="true" />
+                        {isPdfPreview ? "PDF Preview" : "Image Preview"}
+                    </span>
+                    {isPdfPreview ? (
+                        <div className="relative h-full w-full overflow-hidden">
+                            <iframe
+                                src={`${previewUrl}#page=1&view=FitH&toolbar=0&navpanes=0&scrollbar=0`}
+                                title="resume preview"
+                                scrolling="no"
+                                className="absolute inset-y-0 left-0 h-full w-[calc(100%+18px)] border-0"
+                            />
+                            <div aria-hidden="true" className="absolute inset-y-0 right-0 w-4 bg-white pointer-events-none" />
+                        </div>
+                    ) : (
+                        <img
+                            src={previewUrl}
+                            alt="Resume preview"
+                            className="h-full w-full object-contain p-2"
+                            loading="lazy"
+                        />
+                    )}
+                </div>
+            ) : (
+                <div className="flex h-[220px] w-full items-center justify-center rounded-2xl border border-slate-200 bg-slate-50 text-slate-500">
+                    Loading preview...
+                </div>
+            )}
+
+            <div className="mt-auto flex items-center justify-between gap-3 rounded-xl border border-slate-200 bg-white/70 px-3 py-2 text-sm font-semibold text-slate-700">
+                <span>Open full review</span>
+                <ArrowUpRight className="size-4 transition group-hover:translate-x-0.5 group-hover:-translate-y-0.5" aria-hidden="true" />
+            </div>
         </Link>
     );
 };

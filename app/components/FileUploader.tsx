@@ -1,12 +1,14 @@
-import {useState, useCallback} from 'react'
-import {useDropzone} from 'react-dropzone'
+import { useState, useCallback } from 'react'
+import { useDropzone } from 'react-dropzone'
 import { formatSize } from '~/lib/utils'
+import { AlertTriangle, CheckCircle2, FileText, UploadCloud, X } from "lucide-react";
 
 interface FileUploaderProps {
     onFileSelect?: (file: File | null) => void;
+    disabled?: boolean;
 }
 
-const FileUploader = ({ onFileSelect }: FileUploaderProps) => {
+const FileUploader = ({ onFileSelect, disabled = false }: FileUploaderProps) => {
     const [selectedFile, setSelectedFile] = useState<File | null>(null);
 
     const onDrop = useCallback((acceptedFiles: File[]) => {
@@ -17,98 +19,89 @@ const FileUploader = ({ onFileSelect }: FileUploaderProps) => {
 
     const maxFileSize = 20 * 1024 * 1024;
 
-    const {getRootProps, getInputProps, isDragActive, fileRejections} = useDropzone({
+    const { getRootProps, getInputProps, isDragActive, fileRejections } = useDropzone({
         onDrop,
         multiple: false,
-        accept: { 'application/pdf': ['.pdf']},
+        accept: { 'application/pdf': ['.pdf'] },
         maxSize: maxFileSize,
-    })
+        disabled,
+    });
 
     const file = selectedFile;
+    const isRejected = fileRejections.length > 0;
 
     return (
         <>
             <div
                 {...getRootProps()}
-                className={`
-                    w-full p-4 rounded-xl bg-white/10 backdrop-blur-sm border border-white/20 
-                    text-black placeholder-white/60 focus:outline-none focus:ring-2 
-                    focus:ring-white/30 focus:border-white/40 transition-all duration-300 
-                    cursor-pointer
-                    ${file
-                    ? 'h-[72px] flex items-center'
-                    : 'h-[140px] flex items-center justify-center'
-                }
-                    ${isDragActive
-                    ? 'border-white/40 bg-white/15 scale-[1.005] shadow-lg'
-                    : 'hover:border-white/30 hover:bg-white/12'
-                }
-                `}
+                className={`w-full rounded-2xl border-2 border-dashed bg-white p-4 transition ${
+                    disabled
+                        ? "cursor-not-allowed border-slate-200 bg-slate-50 opacity-70"
+                        : isDragActive
+                            ? "cursor-pointer border-sky-400 bg-sky-50/70"
+                            : file
+                                ? "cursor-pointer border-teal-300 bg-teal-50/40 hover:border-teal-400"
+                                : "cursor-pointer border-slate-300 hover:border-sky-300 hover:bg-sky-50/30"
+                } ${file ? "flex min-h-[82px] items-center" : "flex min-h-[172px] items-center justify-center"}`}
             >
                 <input {...getInputProps()} />
 
                 {file ? (
                     <div className="flex items-center justify-between w-full">
-                        <div className="flex items-center space-x-4 min-w-0 flex-1">
+                        <div className="flex min-w-0 flex-1 items-center gap-3">
                             <div className="relative flex-shrink-0">
-                                <img src="/images/pdf.png" alt="pdf" className="w-8 h-8" />
-                                <div className="absolute -top-1 -right-1 w-3 h-3 bg-green-400 rounded-full border border-white shadow-sm"></div>
+                                <div className="flex size-11 items-center justify-center rounded-xl bg-white text-slate-600 shadow-sm">
+                                    <FileText className="size-6" aria-hidden="true" />
+                                </div>
+                                <CheckCircle2 className="absolute -bottom-1 -right-1 size-5 rounded-full bg-white text-emerald-500" aria-hidden="true" />
                             </div>
                             <div className="min-w-0 flex-1">
-                                <p className="text-lg font-semibold text-black truncate">
-                                    {file.name}
-                                </p>
-                                <p className="text-sm text-black/60">
-                                    {formatSize(file.size)}
-                                </p>
+                                <p className="truncate text-base font-semibold text-slate-900">{file.name}</p>
+                                <p className="text-sm text-slate-500">{formatSize(file.size)}</p>
                             </div>
                         </div>
 
                         <button
-                            className="flex-shrink-0 p-3 hover:bg-white/20 rounded-lg transition-colors duration-200 ml-4"
+                            type="button"
+                            className="ml-4 flex size-9 flex-shrink-0 items-center justify-center rounded-lg border border-slate-200 bg-white text-slate-500 transition hover:bg-rose-50 hover:text-rose-600"
                             onClick={(e) => {
                                 e.stopPropagation();
                                 setSelectedFile(null);
                                 onFileSelect?.(null);
                             }}
+                            disabled={disabled}
+                            aria-label="Remove file"
                         >
-                            <svg className="w-6 h-6 text-black/60 hover:text-black" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
-                            </svg>
+                            <X className="size-4" aria-hidden="true" />
                         </button>
                     </div>
                 ) : (
-                    <div className="flex items-center space-x-6 w-full justify-center">
-                        <div className={`transition-all duration-300 flex-shrink-0 ${isDragActive ? 'scale-110' : ''}`}>
-                            <svg className="w-16 h-16 text-white/60" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M7 16a4 4 0 01-.88-7.903A5 5 0 1115.9 6L16 6a5 5 0 011 9.9M15 13l-3-3m0 0l-3 3m3-3v12" />
-                            </svg>
+                    <div className="flex w-full flex-col items-center justify-center gap-4 text-center sm:flex-row sm:text-left">
+                        <div className="flex size-14 items-center justify-center rounded-2xl bg-slate-100 text-slate-600">
+                            <UploadCloud className="size-7" aria-hidden="true" />
                         </div>
 
-                        <div className="text-left">
-                            <p className="text-xl font-semibold text-white">
+                        <div>
+                            <p className="text-base font-semibold text-slate-900">
                                 {isDragActive ? (
-                                    <span className="text-blue-600">Drop your PDF here</span>
+                                    <span className="text-sky-700">Drop your PDF here</span>
                                 ) : (
                                     <>
                                         <span>Click to upload</span>
-                                        <span className="font-normal text-white/70"> or drag & drop</span>
+                                        <span className="font-normal text-slate-600"> or drag and drop</span>
                                     </>
                                 )}
                             </p>
-                            <p className="text-lg text-white/50 mt-1">
-                                PDF files only • Max {formatSize(maxFileSize)}
-                            </p>
+                            <p className="mt-1 text-sm text-slate-500">PDF only, up to {formatSize(maxFileSize)}</p>
                         </div>
                     </div>
                 )}
             </div>
 
-            {fileRejections.length > 0 && (
-                <div className="mt-3 p-4 bg-red-500/20 border border-red-500/30 rounded-lg backdrop-blur-sm">
-                    <p className="text-base text-red-600 font-medium">
-                        {fileRejections[0].errors[0].message}
-                    </p>
+            {isRejected && (
+                <div className="alert-error mt-3 flex items-start gap-2">
+                    <AlertTriangle className="mt-0.5 size-4 shrink-0" aria-hidden="true" />
+                    <p>{fileRejections[0].errors[0].message}</p>
                 </div>
             )}
         </>

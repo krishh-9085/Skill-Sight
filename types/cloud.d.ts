@@ -13,9 +13,10 @@ interface FSItem {
     writable: boolean;
 }
 
-interface PuterUser {
+interface AppUser {
     uuid: string;
     username: string;
+    email?: string;
 }
 
 interface KVItem {
@@ -25,7 +26,7 @@ interface KVItem {
 
 interface ChatMessageContent {
     type: "file" | "text";
-    puter_path?: string;
+    file_path?: string;
     text?: string;
 }
 
@@ -34,7 +35,7 @@ interface ChatMessage {
     content: string | ChatMessageContent[];
 }
 
-interface PuterChatOptions {
+interface AIChatOptions {
     model?: string;
     stream?: boolean;
     max_tokens?: number;

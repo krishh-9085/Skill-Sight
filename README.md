@@ -1,87 +1,61 @@
-# Welcome to React Router!
+# SkillSight Resume Analyzer
 
-A modern, production-ready template for building full-stack React applications using React Router.
+Cloud-based resume analyzer built with React Router, Supabase Storage/DB, and local Ollama model inference.
 
-[![Open in StackBlitz](https://developer.stackblitz.com/img/open_in_stackblitz.svg)](https://stackblitz.com/github/remix-run/react-router-templates/tree/main/default)
+## Setup
 
-## Features
-
-- 🚀 Server-side rendering
-- ⚡️ Hot Module Replacement (HMR)
-- 📦 Asset bundling and optimization
-- 🔄 Data loading and mutations
-- 🔒 TypeScript by default
-- 🎉 TailwindCSS for styling
-- 📖 [React Router docs](https://reactrouter.com/)
-
-## Getting Started
-
-### Installation
-
-Install the dependencies:
+1. Install dependencies
 
 ```bash
 npm install
 ```
 
-### Development
+2. Create `.env` from `.env.example` and fill values.
 
-Start the development server with HMR:
+3. In Supabase Dashboard:
+   - Go to **Authentication > Providers > Email** and enable email/password auth.
+   - (Optional) Disable email confirmation in **Authentication > Settings** for easier local testing.
+
+4. In Supabase SQL Editor, open `docs/supabase.sql`, copy all contents, paste into the editor, and click **Run**.
+
+5. Start dev server
 
 ```bash
 npm run dev
 ```
 
-Your application will be available at `http://localhost:5173`.
+## Required Environment Variables
 
-## Building for Production
+- `VITE_SUPABASE_URL`
+- `VITE_SUPABASE_ANON_KEY`
+- `VITE_SUPABASE_STORAGE_BUCKET` (default: `resumes`)
+- `SUPABASE_SERVICE_ROLE_KEY` (server-only)
+- `OLLAMA_BASE_URL` (optional, default `http://127.0.0.1:11434`)
+- `OLLAMA_MODEL` (optional, default `qwen2.5:7b-instruct`)
+- `OLLAMA_TIMEOUT_MS` (optional, default `60000`)
+- `OLLAMA_NUM_PREDICT` (optional, default `900`)
+- `OLLAMA_NUM_CTX` (optional, default `3072`)
+- `OLLAMA_MAX_RESUME_CHARS` (optional, default `4500`)
+- `OLLAMA_MAX_RESUME_PAGES` (optional, default `1`)
 
-Create a production build:
+## Notes
+
+- Uploads are stored in Supabase Storage.
+- Resume metadata + feedback are stored in `public.resumes` and scoped by `user_id`.
+- Storage object paths are user-scoped and must follow: `<auth.uid()>/<random>/<filename>`.
+- AI analysis runs in `app/routes/api.analyze.ts` on the server and calls your local Ollama instance.
+
+## Ollama Setup (Free Local AI)
+
+1. Install Ollama: https://ollama.com/download
+2. Pull a model:
 
 ```bash
-npm run build
+ollama pull qwen2.5:7b-instruct
 ```
 
-## Deployment
-
-### Docker Deployment
-
-To build and run using Docker:
+3. Start Ollama server (if not already running):
 
 ```bash
-docker build -t my-app .
-
-# Run the container
-docker run -p 3000:3000 my-app
+ollama serve
 ```
-
-The containerized application can be deployed to any platform that supports Docker, including:
-
-- AWS ECS
-- Google Cloud Run
-- Azure Container Apps
-- Digital Ocean App Platform
-- Fly.io
-- Railway
-
-### DIY Deployment
-
-If you're familiar with deploying Node applications, the built-in app server is production-ready.
-
-Make sure to deploy the output of `npm run build`
-
-```
-├── package.json
-├── package-lock.json (or pnpm-lock.yaml, or bun.lockb)
-├── build/
-│   ├── client/    # Static assets
-│   └── server/    # Server-side code
-```
-
-## Styling
-
-This template comes with [Tailwind CSS](https://tailwindcss.com/) already configured for a simple default starting experience. You can use whatever CSS framework you prefer.
-
----
-
-Built with ❤️ using React Router.
