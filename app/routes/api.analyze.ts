@@ -285,6 +285,19 @@ const env = (key: string): string | undefined => {
   return process.env[key] || viteEnv?.[key];
 };
 
+type ThinkSetting = boolean | "low" | "medium" | "high";
+
+const resolveThinkSetting = (model: string, rawOverride: string | undefined): ThinkSetting => {
+  const override = (rawOverride || "").trim().toLowerCase();
+  if (override === "true") return true;
+  if (override === "false" || override === "off" || override === "none" || override === "disabled") return false;
+  if (override === "low" || override === "medium" || override === "high") return override;
+
+  // GPT-OSS models expect think levels and can spend many tokens on reasoning.
+  if (/gpt-oss/i.test(model)) return "low";
+  return false;
+};
+
 const cleanModelOutput = (raw: string): string =>
   raw
     .replace(/^```json\s*/i, "")
@@ -456,85 +469,578 @@ const sanitizeDetailedTips = (tips: unknown, fallbackTopic: string): DetailedTip
   return output.length > 0 ? output : fallback;
 };
 
-const computeScores = (raw: RawFeedback, options?: { hasJobContext?: boolean }): Feedback => {
-  const hasJobContext = options?.hasJobContext ?? true;
-  const roleMatch = clampScore(raw?.rubric?.roleMatch);
-  const keywordCoverage = clampScore(raw?.rubric?.keywordCoverage);
-  const experienceMatch = clampScore(raw?.rubric?.experienceMatch);
-  const impactEvidence = clampScore(raw?.rubric?.impactEvidence);
-  const formattingAndParseability = clampScore(raw?.rubric?.formattingAndParseability);
-  const writingQuality = clampScore(raw?.rubric?.writingQuality);
-  const effectiveRoleMatch =
-    !hasJobContext && roleMatch <= 5
-      ? clampScore(Math.round((keywordCoverage + experienceMatch + writingQuality) / 3))
-      : roleMatch;
+const ATS_STOP_WORDS = new Set([
+  "a",
+  "about",
+  "an",
+  "and",
+  "any",
+  "as",
+  "at",
+  "be",
+  "by",
+  "for",
+  "from",
+  "in",
+  "into",
+  "is",
+  "it",
+  "of",
+  "on",
+  "or",
+  "that",
+  "the",
+  "to",
+  "with",
+  "your",
+  "you",
+  "our",
+  "their",
+  "this",
+  "those",
+  "these",
+  "will",
+  "can",
+  "should",
+  "must",
+  "required",
+  "requirement",
+  "requirements",
+  "preferred",
+  "plus",
+  "nice",
+  "have",
+  "has",
+  "had",
+  "years",
+  "year",
+  "experience",
+  "strong",
+  "excellent",
+  "ability",
+  "abilities",
+  "skills",
+  "skill",
+  "knowledge",
+  "role",
+  "position",
+  "candidate",
+  "team",
+  "work",
+  "working",
+  "across",
+  "including",
+  "etc",
+  "other",
+  "using",
+  "used",
+  "use",
+  "through",
+  "within",
+  "across",
+  "such",
+  "who",
+  "what",
+  "when",
+  "where",
+  "why",
+  "how",
+  "if",
+  "while",
+  "than",
+  "then",
+  "also",
+  "both",
+  "either",
+  "each",
+  "every",
+  "we",
+  "they",
+  "he",
+  "she",
+  "them",
+  "his",
+  "her",
+]);
 
-  const missingKeywords = sanitizeTextList(raw?.coverage?.missingKeywords);
-  const missingRequirements = sanitizeTextList(raw?.coverage?.missingRequirements);
-  const matchedKeywords = sanitizeTextList(raw?.coverage?.matchedKeywords);
-  const matchedRequirements = sanitizeTextList(raw?.coverage?.matchedRequirements);
+const ATS_GENERIC_KEYWORDS = new Set([
+  "communication",
+  "collaboration",
+  "problem",
+  "solving",
+  "detail",
+  "details",
+  "motivated",
+  "proactive",
+  "dynamic",
+  "environment",
+  "responsible",
+  "responsibilities",
+  "support",
+  "manage",
+  "managing",
+  "ability",
+  "leadership",
+  "stakeholders",
+  "business",
+  "company",
+  "organization",
+  "organizational",
+  "professional",
+  "written",
+  "verbal",
+]);
 
-  const missingRequirementPenalty = hasJobContext ? Math.min(24, missingRequirements.length * 4) : 0;
-  const missingKeywordPenalty = hasJobContext ? Math.min(12, Math.floor(missingKeywords.length / 4) * 2) : 0;
-  const lowAlignmentPenalty = hasJobContext
-    ? effectiveRoleMatch < 40
-      ? 10
-      : effectiveRoleMatch < 55
-        ? 5
-        : 0
-    : 0;
+type TextMatchContext = {
+  normalized: string;
+  tokenSet: Set<string>;
+};
 
-  let atsScore = hasJobContext
-    ? Math.round(
-      keywordCoverage * 0.4 + formattingAndParseability * 0.25 + effectiveRoleMatch * 0.2 + experienceMatch * 0.15,
-    )
-    : Math.round(
-      formattingAndParseability * 0.4 + writingQuality * 0.25 + keywordCoverage * 0.2 + impactEvidence * 0.15,
+type AtsHeuristicSignals = {
+  keywordScore: number;
+  requirementScore: number;
+  roleScore: number;
+  parseabilityScore: number;
+  impactScore: number;
+  writingScore: number;
+  matchedKeywords: string[];
+  missingKeywords: string[];
+  matchedRequirements: string[];
+  missingRequirements: string[];
+  stats: {
+    hasEmail: boolean;
+    hasPhone: boolean;
+    hasLinkedIn: boolean;
+    sectionCount: number;
+    bulletCount: number;
+    quantifiedBulletCount: number;
+    dateMentionCount: number;
+    wordCount: number;
+  };
+};
+
+const tokenizeForAts = (text: string): string[] =>
+  (text.toLowerCase().match(/[a-z0-9+#.-]{2,}/g) || [])
+    .map((token) => token.replace(/^[.-]+|[.-]+$/g, ""))
+    .filter((token) => token.length >= 2);
+
+const createTextMatchContext = (text: string): TextMatchContext => {
+  const normalized = ` ${text
+    .toLowerCase()
+    .replace(/[^a-z0-9+#.]+/g, " ")
+    .replace(/\s+/g, " ")
+    .trim()} `;
+  const tokenSet = new Set(tokenizeForAts(text).filter((token) => !ATS_STOP_WORDS.has(token)));
+  return { normalized, tokenSet };
+};
+
+const mergeUniqueLists = (...lists: string[][]): string[] => {
+  const seen = new Set<string>();
+  const merged: string[] = [];
+  for (const list of lists) {
+    for (const item of list) {
+      const clean = item.trim();
+      if (!clean) continue;
+      const key = clean.toLowerCase();
+      if (seen.has(key)) continue;
+      seen.add(key);
+      merged.push(clean);
+    }
+  }
+  return merged;
+};
+
+const formatKeywordLabel = (term: string): string => {
+  const clean = term.trim();
+  if (!clean) return "";
+  if (/^[a-z]{2,4}$/.test(clean)) return clean.toUpperCase();
+  return clean;
+};
+
+const termAppearsInText = (term: string, context: TextMatchContext): boolean => {
+  const termTokens = tokenizeForAts(term).filter((token) => !ATS_STOP_WORDS.has(token));
+  if (termTokens.length === 0) return false;
+  if (termTokens.length === 1) return context.tokenSet.has(termTokens[0]);
+
+  const phrase = ` ${termTokens.join(" ")} `;
+  if (context.normalized.includes(phrase)) return true;
+
+  let hits = 0;
+  for (const token of termTokens) {
+    if (context.tokenSet.has(token)) hits += 1;
+  }
+  return hits >= Math.min(2, termTokens.length) && hits / termTokens.length >= 0.6;
+};
+
+const detectSeniorityLevel = (text: string): number => {
+  const lower = text.toLowerCase();
+  if (/\bintern(ship)?\b/.test(lower)) return 1;
+  if (/\b(junior|jr\.?)\b/.test(lower)) return 2;
+  if (/\b(mid|intermediate)\b/.test(lower)) return 3;
+  if (/\b(senior|sr\.?)\b/.test(lower)) return 4;
+  if (/\b(lead|manager|head)\b/.test(lower)) return 5;
+  if (/\b(staff|principal|director|vp|vice president)\b/.test(lower)) return 6;
+  return 0;
+};
+
+const pickKeywordCandidates = (jobTitle: string, jobDescription: string): string[] => {
+  const titleTokens = tokenizeForAts(jobTitle).filter(
+    (token) => !ATS_STOP_WORDS.has(token) && !ATS_GENERIC_KEYWORDS.has(token) && !/^\d+$/.test(token),
+  );
+  const jdTokens = tokenizeForAts(jobDescription).filter(
+    (token) => !ATS_STOP_WORDS.has(token) && !ATS_GENERIC_KEYWORDS.has(token) && !/^\d+$/.test(token),
+  );
+
+  const frequency = new Map<string, number>();
+  for (const token of jdTokens) {
+    frequency.set(token, (frequency.get(token) || 0) + 1);
+  }
+  const sortedByFrequency = [...frequency.entries()]
+    .sort((a, b) => (b[1] !== a[1] ? b[1] - a[1] : a[0].localeCompare(b[0])))
+    .map(([token]) => token);
+
+  return mergeUniqueLists(titleTokens, sortedByFrequency).slice(0, 24);
+};
+
+const extractRequirementCandidates = (jobDescription: string): string[] => {
+  const requirementHints =
+    /\b(must|required|requirements?|experience|proficien|knowledge|hands-on|ability|familiar|expertise|certification|degree|strong)\b/i;
+
+  const rawParts = jobDescription
+    .split(/\r?\n|;|•/g)
+    .map((part) => part.replace(/^[\s\-*•\d.)]+/, "").replace(/\s+/g, " ").trim())
+    .filter(Boolean);
+
+  const filtered = rawParts
+    .filter((part) => {
+      const tokenCount = tokenizeForAts(part).length;
+      return tokenCount >= 3 && tokenCount <= 20 && requirementHints.test(part);
+    })
+    .map((part) => (part.length > 120 ? `${part.slice(0, 117)}...` : part));
+
+  return mergeUniqueLists(filtered).slice(0, 10);
+};
+
+const blendScore = (modelScore: number, heuristicScore: number, heuristicWeight: number): number => {
+  const weight = Math.max(0, Math.min(1, heuristicWeight));
+  return clampScore(Math.round(modelScore * (1 - weight) + heuristicScore * weight));
+};
+
+const computeHeuristicSignals = (args: {
+  hasJobContext: boolean;
+  jobTitle: string;
+  jobDescription: string;
+  resumeText: string;
+}): AtsHeuristicSignals => {
+  const resumeContext = createTextMatchContext(args.resumeText);
+  const keywordCandidates = pickKeywordCandidates(args.jobTitle, args.jobDescription);
+
+  const matchedKeywords = keywordCandidates
+    .filter((term) => termAppearsInText(term, resumeContext))
+    .map(formatKeywordLabel);
+  const missingKeywords = keywordCandidates
+    .filter((term) => !termAppearsInText(term, resumeContext))
+    .map(formatKeywordLabel);
+
+  const keywordScore =
+    keywordCandidates.length > 0 ? Math.round((matchedKeywords.length / keywordCandidates.length) * 100) : 55;
+
+  const requirementCandidates = extractRequirementCandidates(args.jobDescription);
+  const matchedRequirements: string[] = [];
+  const missingRequirements: string[] = [];
+  for (const req of requirementCandidates) {
+    const reqTokens = tokenizeForAts(req).filter(
+      (token) => !ATS_STOP_WORDS.has(token) && !ATS_GENERIC_KEYWORDS.has(token),
     );
-  atsScore = clampScore(atsScore - missingRequirementPenalty - missingKeywordPenalty - lowAlignmentPenalty);
+    if (reqTokens.length === 0) continue;
+    let hitCount = 0;
+    for (const token of reqTokens) {
+      if (resumeContext.tokenSet.has(token)) hitCount += 1;
+    }
+    const ratio = hitCount / reqTokens.length;
+    if (hitCount >= Math.min(2, reqTokens.length) && ratio >= 0.45) matchedRequirements.push(req);
+    else missingRequirements.push(req);
+  }
+
+  const requirementScore =
+    requirementCandidates.length > 0
+      ? Math.round((matchedRequirements.length / requirementCandidates.length) * 100)
+      : args.hasJobContext
+        ? Math.round(keywordScore * 0.75 + 15)
+        : 60;
+
+  const titleTokens = tokenizeForAts(args.jobTitle).filter(
+    (token) => !ATS_STOP_WORDS.has(token) && !ATS_GENERIC_KEYWORDS.has(token),
+  );
+  let roleScore = 58;
+  if (titleTokens.length > 0) {
+    let titleHits = 0;
+    for (const token of titleTokens) {
+      if (resumeContext.tokenSet.has(token)) titleHits += 1;
+    }
+    const titleCoverage = titleHits / titleTokens.length;
+    const jdSeniority = detectSeniorityLevel(args.jobTitle);
+    const resumeSeniority = detectSeniorityLevel(args.resumeText);
+    const seniorityPenalty =
+      jdSeniority > 0 && resumeSeniority > 0
+        ? Math.abs(jdSeniority - resumeSeniority) >= 3
+          ? 14
+          : Math.abs(jdSeniority - resumeSeniority) >= 2
+            ? 8
+            : 0
+        : 0;
+    roleScore = clampScore(Math.round(35 + titleCoverage * 65 - seniorityPenalty));
+  }
+
+  const lowerResume = args.resumeText.toLowerCase();
+  const lines = args.resumeText.split(/\r?\n/).map((line) => line.trim());
+  const bulletLines = lines.filter((line) => /^(?:[-*•]|\d+\.)\s+/.test(line));
+  const quantifiedBulletCount = bulletLines.filter((line) =>
+    /(?:\$\s?\d[\d,.]*|\d[\d,.]*\s?%|\b\d+\+?\b|\b(?:k|m|b)\b)/i.test(line),
+  ).length;
+  const hasEmail = /\b[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}\b/i.test(args.resumeText);
+  const hasPhone = /(?:\+?\d[\d\s().-]{7,}\d)/.test(args.resumeText);
+  const hasLinkedIn = /linkedin\.com\/in\//i.test(args.resumeText);
+  const sectionPatterns = [
+    /\b(summary|profile)\b/i,
+    /\bexperience\b/i,
+    /\beducation\b/i,
+    /\bskills?\b/i,
+    /\bprojects?\b/i,
+    /\bcertifications?\b/i,
+  ];
+  const sectionCount = sectionPatterns.reduce((count, pattern) => count + (pattern.test(lowerResume) ? 1 : 0), 0);
+  const dateMentionCount =
+    (args.resumeText.match(/\b(?:19|20)\d{2}\b/g) || []).length +
+    (args.resumeText.match(/\b(?:jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec)[a-z]*\b/gi) || []).length;
+  const wordCount = tokenizeForAts(args.resumeText).length;
+  const symbolNoiseCount = (args.resumeText.match(/[^\w\s.,;:%$()+\-/#]/g) || []).length;
+  const symbolNoiseRatio = symbolNoiseCount / Math.max(1, args.resumeText.length);
+
+  let parseabilityScore = 28;
+  if (hasEmail) parseabilityScore += 12;
+  if (hasPhone) parseabilityScore += 9;
+  if (hasLinkedIn) parseabilityScore += 6;
+  parseabilityScore += Math.min(26, sectionCount * 5);
+  parseabilityScore += bulletLines.length >= 8 ? 12 : bulletLines.length >= 4 ? 8 : bulletLines.length >= 2 ? 4 : -5;
+  parseabilityScore += dateMentionCount >= 4 ? 8 : dateMentionCount >= 2 ? 4 : -4;
+  parseabilityScore += wordCount >= 250 && wordCount <= 1200 ? 8 : wordCount >= 140 && wordCount <= 1800 ? 3 : -8;
+  if (symbolNoiseRatio > 0.12) parseabilityScore -= 8;
+  else if (symbolNoiseRatio > 0.08) parseabilityScore -= 4;
+  parseabilityScore = clampScore(parseabilityScore);
+
+  const quantityMentions =
+    args.resumeText.match(/(?:\$\s?\d[\d,.]*[kmb]?|\d[\d,.]*\s?%|\b\d+\+?\b)/gi)?.length || 0;
+  const actionVerbCount =
+    args.resumeText.match(
+      /\b(led|built|designed|implemented|improved|increased|reduced|optimized|launched|delivered|automated|managed|created|developed|drove|scaled|achieved)\b/gi,
+    )?.length || 0;
+  const quantifiedBulletRatio = bulletLines.length > 0 ? quantifiedBulletCount / bulletLines.length : 0;
+  let impactScore = 24;
+  impactScore += Math.min(40, quantityMentions * 5);
+  impactScore += Math.min(18, actionVerbCount * 2);
+  impactScore += quantifiedBulletRatio >= 0.4 ? 12 : quantifiedBulletRatio >= 0.2 ? 6 : 0;
+  impactScore = clampScore(impactScore);
+
+  const sentences = args.resumeText
+    .split(/[.!?]+/)
+    .map((sentence) => sentence.trim())
+    .filter(Boolean);
+  const sentenceCount = Math.max(1, sentences.length);
+  const avgWordsPerSentence = wordCount / sentenceCount;
+  const longSentenceCount = sentences.filter((sentence) => tokenizeForAts(sentence).length > 32).length;
+  const allCapsWords = (args.resumeText.match(/\b[A-Z]{3,}\b/g) || []).length;
+  const allCapsRatio = allCapsWords / Math.max(1, wordCount);
+  let writingScore = 76;
+  writingScore += avgWordsPerSentence >= 10 && avgWordsPerSentence <= 24 ? 8 : avgWordsPerSentence <= 32 ? 2 : -8;
+  writingScore -= Math.min(12, longSentenceCount * 3);
+  if (allCapsRatio > 0.08) writingScore -= 8;
+  if (/[!?]{2,}/.test(args.resumeText)) writingScore -= 5;
+  if (wordCount < 120) writingScore -= 8;
+  writingScore = clampScore(writingScore);
+
+  return {
+    keywordScore,
+    requirementScore,
+    roleScore,
+    parseabilityScore,
+    impactScore,
+    writingScore,
+    matchedKeywords: matchedKeywords.slice(0, 12),
+    missingKeywords: missingKeywords.slice(0, 12),
+    matchedRequirements: matchedRequirements.slice(0, 8),
+    missingRequirements: missingRequirements.slice(0, 8),
+    stats: {
+      hasEmail,
+      hasPhone,
+      hasLinkedIn,
+      sectionCount,
+      bulletCount: bulletLines.length,
+      quantifiedBulletCount,
+      dateMentionCount,
+      wordCount,
+    },
+  };
+};
+
+const computeScores = (
+  raw: RawFeedback,
+  options?: {
+    hasJobContext?: boolean;
+    jobTitle?: string;
+    jobDescription?: string;
+    resumeText?: string;
+  },
+): Feedback => {
+  const hasJobContext = options?.hasJobContext ?? true;
+  const jobTitle = options?.jobTitle || "";
+  const jobDescription = options?.jobDescription || "";
+  const resumeText = options?.resumeText || "";
+
+  const heuristic = computeHeuristicSignals({
+    hasJobContext,
+    jobTitle,
+    jobDescription,
+    resumeText,
+  });
+
+  const modelRoleMatch = clampScore(raw?.rubric?.roleMatch);
+  const modelKeywordCoverage = clampScore(raw?.rubric?.keywordCoverage);
+  const modelExperienceMatch = clampScore(raw?.rubric?.experienceMatch);
+  const modelImpactEvidence = clampScore(raw?.rubric?.impactEvidence);
+  const modelFormatting = clampScore(raw?.rubric?.formattingAndParseability);
+  const modelWriting = clampScore(raw?.rubric?.writingQuality);
+
+  const roleMatch = hasJobContext
+    ? blendScore(modelRoleMatch, heuristic.roleScore, 0.55)
+    : blendScore(modelRoleMatch, heuristic.roleScore, 0.2);
+  const keywordCoverage = hasJobContext
+    ? blendScore(modelKeywordCoverage, heuristic.keywordScore, 0.62)
+    : blendScore(modelKeywordCoverage, heuristic.keywordScore, 0.35);
+  const experienceMatch = hasJobContext
+    ? blendScore(modelExperienceMatch, heuristic.requirementScore, 0.52)
+    : blendScore(modelExperienceMatch, heuristic.impactScore, 0.25);
+  const impactEvidence = blendScore(modelImpactEvidence, heuristic.impactScore, 0.45);
+  const formattingAndParseability = blendScore(modelFormatting, heuristic.parseabilityScore, 0.62);
+  const writingQuality = blendScore(modelWriting, heuristic.writingScore, 0.28);
+
+  const resumeContext = createTextMatchContext(resumeText);
+  const jobContext = createTextMatchContext(`${jobTitle}\n${jobDescription}`);
+  const modelMatchedKeywords = sanitizeTextList(raw?.coverage?.matchedKeywords).filter(
+    (term) => termAppearsInText(term, resumeContext) && (!hasJobContext || termAppearsInText(term, jobContext)),
+  );
+  const modelMissingKeywords = sanitizeTextList(raw?.coverage?.missingKeywords).filter(
+    (term) => (!hasJobContext || termAppearsInText(term, jobContext)) && !termAppearsInText(term, resumeContext),
+  );
+  const modelMatchedRequirements = sanitizeTextList(raw?.coverage?.matchedRequirements).filter(
+    (term) => termAppearsInText(term, resumeContext) && (!hasJobContext || termAppearsInText(term, jobContext)),
+  );
+  const modelMissingRequirements = sanitizeTextList(raw?.coverage?.missingRequirements).filter(
+    (term) => (!hasJobContext || termAppearsInText(term, jobContext)) && !termAppearsInText(term, resumeContext),
+  );
+
+  const matchedKeywords = mergeUniqueLists(heuristic.matchedKeywords, modelMatchedKeywords).slice(0, 12);
+  const matchedKeywordSet = new Set(matchedKeywords.map((item) => item.toLowerCase()));
+  const missingKeywords = mergeUniqueLists(heuristic.missingKeywords, modelMissingKeywords)
+    .filter((item) => !matchedKeywordSet.has(item.toLowerCase()))
+    .slice(0, 12);
+
+  const matchedRequirements = mergeUniqueLists(heuristic.matchedRequirements, modelMatchedRequirements).slice(0, 8);
+  const matchedRequirementSet = new Set(matchedRequirements.map((item) => item.toLowerCase()));
+  const missingRequirements = mergeUniqueLists(heuristic.missingRequirements, modelMissingRequirements)
+    .filter((item) => !matchedRequirementSet.has(item.toLowerCase()))
+    .slice(0, 8);
+
+  const missingRequirementPenalty = hasJobContext ? Math.min(18, missingRequirements.length * 3) : 0;
+  const missingKeywordPenalty = hasJobContext ? Math.min(10, Math.floor(missingKeywords.length / 2)) : 0;
+  const lowAlignmentPenalty = hasJobContext ? (roleMatch < 35 ? 10 : roleMatch < 50 ? 5 : 0) : 0;
+  const structurePenalty = heuristic.stats.sectionCount < 3 ? 6 : 0;
+  const contactPenalty = !heuristic.stats.hasEmail || !heuristic.stats.hasPhone ? 6 : 0;
+
+  const modelAtsComposite = hasJobContext
+    ? Math.round(keywordCoverage * 0.4 + formattingAndParseability * 0.25 + roleMatch * 0.2 + experienceMatch * 0.15)
+    : Math.round(formattingAndParseability * 0.4 + writingQuality * 0.25 + keywordCoverage * 0.2 + impactEvidence * 0.15);
+  const evidenceAtsComposite = hasJobContext
+    ? Math.round(heuristic.keywordScore * 0.45 + heuristic.parseabilityScore * 0.3 + heuristic.requirementScore * 0.25)
+    : Math.round(heuristic.parseabilityScore * 0.45 + heuristic.impactScore * 0.25 + heuristic.writingScore * 0.2 + heuristic.keywordScore * 0.1);
+
+  let atsScore = blendScore(modelAtsComposite, evidenceAtsComposite, hasJobContext ? 0.65 : 0.55);
+  atsScore = clampScore(
+    atsScore - missingRequirementPenalty - missingKeywordPenalty - lowAlignmentPenalty - structurePenalty - contactPenalty,
+  );
 
   let skillsScore = hasJobContext
-    ? Math.round(keywordCoverage * 0.7 + effectiveRoleMatch * 0.3)
-    : Math.round(keywordCoverage * 0.55 + experienceMatch * 0.25 + effectiveRoleMatch * 0.2);
-  skillsScore = clampScore(skillsScore - (hasJobContext ? Math.min(16, missingRequirementPenalty) : 0));
+    ? Math.round(keywordCoverage * 0.58 + experienceMatch * 0.25 + roleMatch * 0.17)
+    : Math.round(keywordCoverage * 0.45 + experienceMatch * 0.25 + roleMatch * 0.3);
+  skillsScore = clampScore(skillsScore - Math.min(14, missingRequirementPenalty));
 
   let contentScore = hasJobContext
-    ? Math.round(impactEvidence * 0.45 + experienceMatch * 0.35 + effectiveRoleMatch * 0.2)
-    : Math.round(impactEvidence * 0.5 + experienceMatch * 0.3 + writingQuality * 0.2);
-  contentScore = clampScore(contentScore - (hasJobContext ? Math.min(8, Math.floor(missingRequirementPenalty / 2)) : 0));
+    ? Math.round(impactEvidence * 0.45 + experienceMatch * 0.35 + roleMatch * 0.2)
+    : Math.round(impactEvidence * 0.5 + experienceMatch * 0.25 + writingQuality * 0.25);
+  contentScore = clampScore(contentScore - Math.min(8, Math.floor(missingRequirementPenalty / 2)));
 
-  const structureScore = clampScore(Math.round(formattingAndParseability * 0.75 + writingQuality * 0.25));
-  const toneAndStyleScore = clampScore(Math.round(writingQuality * 0.7 + impactEvidence * 0.3));
+  const structureScore = clampScore(Math.round(formattingAndParseability * 0.8 + writingQuality * 0.2));
+  const toneAndStyleScore = clampScore(Math.round(writingQuality * 0.72 + impactEvidence * 0.28));
 
   const overallScore = hasJobContext
     ? clampScore(
       Math.round(
-        atsScore * 0.35 +
+        atsScore * 0.38 +
           toneAndStyleScore * 0.1 +
           contentScore * 0.2 +
-          structureScore * 0.15 +
-          skillsScore * 0.2,
+          structureScore * 0.14 +
+          skillsScore * 0.18,
       ),
     )
     : clampScore(
       Math.round(
-        atsScore * 0.3 +
+        atsScore * 0.32 +
           toneAndStyleScore * 0.2 +
-          contentScore * 0.25 +
+          contentScore * 0.23 +
           structureScore * 0.15 +
           skillsScore * 0.1,
       ),
     );
 
   let atsTips = sanitizeAtsTips(raw?.ATS?.tips);
+  const autoImproveTips: string[] = [];
   if (hasJobContext && missingRequirements.length > 0) {
-    const topMissing = missingRequirements.slice(0, 3).join(", ");
-    const autoTip = `Address missing requirements: ${topMissing}.`;
-    if (!atsTips.some((entry) => entry.type === "improve")) {
-      const injectedTip: AtsTip = { type: "improve", tip: autoTip };
-      atsTips = [injectedTip, ...atsTips].slice(0, 3);
-    }
+    autoImproveTips.push(`Address missing requirements: ${missingRequirements.slice(0, 2).join(", ")}.`);
   }
+  if (missingKeywords.length > 0) {
+    autoImproveTips.push(`Add job keywords naturally: ${missingKeywords.slice(0, 3).join(", ")}.`);
+  }
+  if (!heuristic.stats.hasEmail || !heuristic.stats.hasPhone) {
+    autoImproveTips.push("Include both email and phone near the header for ATS parsing.");
+  }
+  if (heuristic.stats.quantifiedBulletCount < 2) {
+    autoImproveTips.push("Add quantified outcomes to more experience bullets (%, $, counts).");
+  }
+  if (heuristic.stats.sectionCount < 4) {
+    autoImproveTips.push("Use clear ATS section headers: Summary, Experience, Skills, Education.");
+  }
+
+  for (const tip of autoImproveTips) {
+    if (!tip) continue;
+    if (atsTips.some((entry) => entry.tip.toLowerCase() === tip.toLowerCase())) continue;
+    atsTips.push({ type: "improve", tip });
+  }
+  if (!atsTips.some((entry) => entry.type === "good")) {
+    const goodTip =
+      matchedKeywords.length >= Math.max(3, missingKeywords.length)
+        ? "Resume already includes several role-relevant keywords."
+        : "Resume contains a baseline structure ATS can parse.";
+    atsTips.unshift({ type: "good", tip: goodTip });
+  }
+  const dedupedAtsTips: AtsTip[] = [];
+  const seenTipKeys = new Set<string>();
+  for (const entry of atsTips) {
+    const key = `${entry.type}:${entry.tip.trim().toLowerCase()}`;
+    if (seenTipKeys.has(key)) continue;
+    seenTipKeys.add(key);
+    dedupedAtsTips.push(entry);
+  }
+  atsTips = dedupedAtsTips.slice(0, 3);
 
   return {
     overallScore,
@@ -580,59 +1086,224 @@ async function callOllama(
   model: string,
   prompt: string,
   timeoutMs: number,
-  options?: { numPredict?: number; numCtx?: number },
+  options?: { numPredict?: number; numCtx?: number; apiKey?: string; think?: ThinkSetting },
 ): Promise<string> {
-  const endpoint = `${baseUrl.replace(/\/$/, "")}/api/generate`;
-  const controller = new AbortController();
-  const timeoutHandle = setTimeout(() => controller.abort(), timeoutMs);
+  const normalizedBaseUrl = baseUrl.trim().replace(/\/+$/, "");
+  const endpointFor = (mode: "generate" | "chat"): string => {
+    if (new RegExp(`/api/${mode}$`, "i").test(normalizedBaseUrl)) return normalizedBaseUrl;
+    if (/\/api$/i.test(normalizedBaseUrl)) return `${normalizedBaseUrl}/${mode}`;
+    return `${normalizedBaseUrl}/api/${mode}`;
+  };
+  const headers: Record<string, string> = { "Content-Type": "application/json" };
+  if (options?.apiKey) headers.Authorization = `Bearer ${options.apiKey}`;
 
-  let res: Response;
-  try {
-    res = await fetch(endpoint, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
+  const parsePayload = (body: string): unknown => {
+    const trimmed = body.trim();
+    if (!trimmed) return {};
+
+    try {
+      return JSON.parse(trimmed) as unknown;
+    } catch {
+      // Some providers may still return NDJSON chunks despite stream=false.
+      const lines = trimmed
+        .split(/\r?\n/)
+        .map((line) => line.trim())
+        .filter(Boolean);
+
+      const parsedChunks: Array<Record<string, unknown>> = [];
+      for (const line of lines) {
+        try {
+          const parsed = JSON.parse(line) as unknown;
+          if (parsed && typeof parsed === "object") {
+            parsedChunks.push(parsed as Record<string, unknown>);
+          }
+        } catch {
+          // Ignore invalid line and continue.
+        }
+      }
+
+      if (parsedChunks.length === 0) {
+        throw new Error("Ollama returned a non-JSON response.");
+      }
+
+      const mergedResponse = parsedChunks
+        .map((chunk) => (typeof chunk.response === "string" ? chunk.response : ""))
+        .join("")
+        .trim();
+      const mergedMessageContent = parsedChunks
+        .map((chunk) => {
+          const message = chunk.message;
+          if (!message || typeof message !== "object") return "";
+          const content = (message as { content?: unknown }).content;
+          return typeof content === "string" ? content : "";
+        })
+        .join("")
+        .trim();
+
+      const lastChunk = parsedChunks[parsedChunks.length - 1];
+      const merged: Record<string, unknown> = { ...lastChunk };
+      if (mergedResponse) merged.response = mergedResponse;
+      if (mergedMessageContent) {
+        const lastMessage = lastChunk.message;
+        const normalizedMessage =
+          lastMessage && typeof lastMessage === "object"
+            ? { ...(lastMessage as Record<string, unknown>) }
+            : {};
+        normalizedMessage.content = mergedMessageContent;
+        merged.message = normalizedMessage;
+      }
+      return merged;
+    }
+  };
+
+  const extractTextFromPayload = (payload: unknown): string => {
+    if (!payload || typeof payload !== "object") return "";
+    const record = payload as Record<string, unknown>;
+
+    if (typeof record.response === "string" && record.response.trim()) {
+      return record.response.trim();
+    }
+
+    if (typeof record.output_text === "string" && record.output_text.trim()) {
+      return record.output_text.trim();
+    }
+
+    const message = record.message;
+    if (message && typeof message === "object") {
+      const content = (message as { content?: unknown }).content;
+      if (typeof content === "string" && content.trim()) return content.trim();
+    }
+
+    const choices = record.choices;
+    if (Array.isArray(choices) && choices.length > 0) {
+      const firstChoice = choices[0];
+      if (firstChoice && typeof firstChoice === "object") {
+        const choice = firstChoice as Record<string, unknown>;
+        if (typeof choice.text === "string" && choice.text.trim()) return choice.text.trim();
+        const choiceMessage = choice.message;
+        if (choiceMessage && typeof choiceMessage === "object") {
+          const content = (choiceMessage as { content?: unknown }).content;
+          if (typeof content === "string" && content.trim()) return content.trim();
+        }
+      }
+    }
+
+    return "";
+  };
+
+  const summarizePayload = (payload: unknown): Record<string, unknown> => {
+    if (!payload || typeof payload !== "object") return { payloadType: typeof payload };
+    const record = payload as Record<string, unknown>;
+    const message = record.message;
+    const messageContent =
+      message && typeof message === "object" ? (message as { content?: unknown }).content : undefined;
+
+    return {
+      done: record.done,
+      doneReason: record.done_reason,
+      evalCount: record.eval_count,
+      promptEvalCount: record.prompt_eval_count,
+      hasResponse: typeof record.response === "string" && record.response.trim().length > 0,
+      hasMessageContent: typeof messageContent === "string" && messageContent.trim().length > 0,
+      hasOutputText: typeof record.output_text === "string" && record.output_text.trim().length > 0,
+      choiceCount: Array.isArray(record.choices) ? record.choices.length : 0,
+      error: record.error,
+    };
+  };
+
+  const requestOllama = async (
+    mode: "generate" | "chat",
+    body: Record<string, unknown>,
+  ): Promise<unknown> => {
+    const endpoint = endpointFor(mode);
+    const controller = new AbortController();
+    const timeoutHandle = setTimeout(() => controller.abort(), timeoutMs);
+
+    let res: Response;
+    try {
+      res = await fetch(endpoint, {
+        method: "POST",
+        headers,
+        body: JSON.stringify(body),
+        signal: controller.signal,
+      });
+    } catch (error) {
+      if (error instanceof Error && error.name === "AbortError") {
+        throw new Error(`Ollama request timed out after ${Math.round(timeoutMs / 1000)}s.`);
+      }
+      throw error;
+    } finally {
+      clearTimeout(timeoutHandle);
+    }
+
+    const responseBody = await res.text();
+    if (!res.ok) {
+      console.error("[SkillSight:api.analyze] Ollama request failed", {
+        mode,
+        status: res.status,
+        statusText: res.statusText,
+        body: responseBody,
+        endpoint,
         model,
-        prompt,
-        stream: false,
-        format: FEEDBACK_SCHEMA,
-        options: {
-          temperature: 0,
-          num_predict: options?.numPredict ?? 900,
-          num_ctx: options?.numCtx ?? 3072,
-        },
-        keep_alive: "30m",
-      }),
-      signal: controller.signal,
-    });
-  } catch (error) {
-    if (error instanceof Error && error.name === "AbortError") {
-      throw new Error(`Ollama request timed out after ${Math.round(timeoutMs / 1000)}s.`);
+      });
+      if (res.status === 404) {
+        if (/ollama\.com/i.test(normalizedBaseUrl)) {
+          throw new Error(`Ollama Cloud model not found or unavailable: ${model}.`);
+        }
+        throw new Error(`Ollama model not found: ${model}. Run: ollama pull ${model}`);
+      }
+      if (res.status === 401 || res.status === 403) {
+        if (/ollama\.com/i.test(normalizedBaseUrl)) {
+          throw new Error("Ollama Cloud authentication failed. Check OLLAMA_API_KEY.");
+        }
+      }
+      throw new Error(`Ollama API error (${res.status}).`);
     }
-    throw error;
-  } finally {
-    clearTimeout(timeoutHandle);
-  }
 
-  if (!res.ok) {
-    const body = await res.text();
-    console.error("[SkillSight:api.analyze] Ollama request failed", {
-      status: res.status,
-      statusText: res.statusText,
-      body,
-      endpoint,
-      model,
-    });
-    if (res.status === 404) {
-      throw new Error(`Ollama model not found: ${model}. Run: ollama pull ${model}`);
-    }
-    throw new Error(`Ollama API error (${res.status}).`);
-  }
+    return parsePayload(responseBody);
+  };
 
-  const payload = await res.json();
-  const text = (payload?.response || "").trim();
-  if (!text) throw new Error("Ollama returned an empty response.");
-  return text;
+  const commonBody = {
+    model,
+    stream: false,
+    format: FEEDBACK_SCHEMA,
+    think: options?.think ?? false,
+    options: {
+      temperature: 0,
+      num_predict: options?.numPredict ?? 900,
+      num_ctx: options?.numCtx ?? 3072,
+    },
+    keep_alive: "30m",
+  } as const;
+
+  const generatePayload = await requestOllama("generate", {
+    ...commonBody,
+    prompt,
+  });
+  const generateText = extractTextFromPayload(generatePayload);
+  if (generateText) return generateText;
+
+  console.error("[SkillSight:api.analyze] empty generate payload", {
+    endpoint: endpointFor("generate"),
+    model,
+    payload: summarizePayload(generatePayload),
+  });
+
+  const chatPayload = await requestOllama("chat", {
+    ...commonBody,
+    messages: [{ role: "user", content: prompt }],
+  });
+  const chatText = extractTextFromPayload(chatPayload);
+  if (chatText) return chatText;
+
+  console.error("[SkillSight:api.analyze] empty chat payload", {
+    endpoint: endpointFor("chat"),
+    model,
+    payload: summarizePayload(chatPayload),
+  });
+  throw new Error(
+    "Ollama returned an empty response from both generate and chat endpoints. Check OLLAMA_MODEL availability.",
+  );
 }
 
 const buildPrompt = (args: {
@@ -660,6 +1331,8 @@ const buildPrompt = (args: {
     "Return one valid minified JSON object only.",
     "No markdown, comments, or extra text.",
     "Do not add keys outside the provided template.",
+    "Ground every claim in the provided resume text and job description only.",
+    "Do not infer hidden experience. If evidence is unclear, mark it as missing.",
     "",
     "Scoring rubric rules (all integer 0-100):",
     roleMatchRule,
@@ -680,6 +1353,8 @@ const buildPrompt = (args: {
     "- missingKeywords: important JD keywords not present in resume.",
     "- matchedRequirements: explicit JD requirements satisfied in resume.",
     "- missingRequirements: explicit JD requirements not evidenced in resume.",
+    "- Only include concrete skills/tools/requirements. Avoid generic terms like team, communication, fast-paced.",
+    "- A keyword/requirement can be matched only if explicitly present in resume text.",
     "- Keep lists concise, deduplicated, and ordered by importance.",
     ...noJobContextRules,
     "",
@@ -725,15 +1400,27 @@ export async function action({ request }: Route.ActionArgs) {
     const supabaseServiceRoleKey = env("SUPABASE_SERVICE_ROLE_KEY");
     const bucket = env("VITE_SUPABASE_STORAGE_BUCKET") || "resumes";
     const ollamaBaseUrl = env("OLLAMA_BASE_URL") || "http://127.0.0.1:11434";
+    const ollamaApiKey = env("OLLAMA_API_KEY");
     const ollamaModel = env("OLLAMA_MODEL") || "qwen2.5:7b-instruct";
+    const ollamaThink = resolveThinkSetting(ollamaModel, env("OLLAMA_THINK_LEVEL"));
     const ollamaTimeoutMs = Number(env("OLLAMA_TIMEOUT_MS") || "60000");
     const ollamaNumPredict = Number(env("OLLAMA_NUM_PREDICT") || "900");
     const ollamaNumCtx = Number(env("OLLAMA_NUM_CTX") || "3072");
     const maxResumeChars = Number(env("OLLAMA_MAX_RESUME_CHARS") || "4500");
     const maxResumePages = Number(env("OLLAMA_MAX_RESUME_PAGES") || "1");
+    const modelAwareTimeoutMs = /gpt-oss:120b-cloud/i.test(ollamaModel)
+      ? Math.max(120000, ollamaTimeoutMs)
+      : ollamaTimeoutMs;
 
     if (!supabaseUrl || !supabaseServiceRoleKey) {
       return Response.json({ error: "Missing server env vars." }, { status: 500 });
+    }
+
+    if (/ollama\.com/i.test(ollamaBaseUrl) && !ollamaApiKey) {
+      return Response.json(
+        { error: "Missing OLLAMA_API_KEY for Ollama Cloud requests." },
+        { status: 500 },
+      );
     }
 
     const supabase = createClient(supabaseUrl, supabaseServiceRoleKey, {
@@ -780,7 +1467,8 @@ export async function action({ request }: Route.ActionArgs) {
 
     let rawFeedback: RawFeedback | null = null;
     let lastParseError: unknown = null;
-    const basePredict = Math.max(900, ollamaNumPredict);
+    const modelBaselinePredict = /gpt-oss:120b-cloud/i.test(ollamaModel) ? 1400 : /gpt-oss/i.test(ollamaModel) ? 1200 : 900;
+    const basePredict = Math.max(modelBaselinePredict, ollamaNumPredict);
     const attempts: Array<{ prompt: string; numPredict: number }> = [
       {
         prompt: `${basePrompt}\n\nReturn compact JSON. Exactly 2 tips per section.`,
@@ -808,7 +1496,9 @@ export async function action({ request }: Route.ActionArgs) {
 
     for (let i = 0; i < attempts.length; i += 1) {
       const attempt = attempts[i];
-      const output = await callOllama(ollamaBaseUrl, ollamaModel, attempt.prompt, ollamaTimeoutMs, {
+      const output = await callOllama(ollamaBaseUrl, ollamaModel, attempt.prompt, modelAwareTimeoutMs, {
+        apiKey: ollamaApiKey,
+        think: ollamaThink,
         numPredict: attempt.numPredict,
         numCtx: ollamaNumCtx,
       });
@@ -838,7 +1528,12 @@ export async function action({ request }: Route.ActionArgs) {
       );
     }
 
-    const feedback = computeScores(rawFeedback, { hasJobContext });
+    const feedback = computeScores(rawFeedback, {
+      hasJobContext,
+      jobTitle,
+      jobDescription,
+      resumeText,
+    });
     return Response.json({ feedback });
   } catch (error) {
     const message = error instanceof Error ? error.message : "Failed to analyze resume.";
