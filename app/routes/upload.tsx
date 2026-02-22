@@ -2,7 +2,7 @@ import { type FormEvent, useEffect, useState } from 'react'
 import FileUploader from "~/components/FileUploader";
 import { useAppStore } from "~/lib/cloud";
 import { useNavigate } from "react-router";
-import { convertPdfToImage } from "~/lib/pdf2img";
+import { convertPdfToImage, extractPdfText } from "~/lib/pdf2img";
 import { generateUUID } from "~/lib/utils";
 import PageShell from "~/components/PageShell";
 import PageHeading from "~/components/PageHeading";
@@ -67,11 +67,20 @@ const Upload = () => {
                 return;
             }
 
-            updateProgress('Analyzing...', 66);
+            updateProgress('Extracting resume text...', 60);
+            const extractedText = await extractPdfText(file, { maxPages: 2, maxChars: 12000 });
+            if (!extractedText.text) {
+                throw new Error(
+                    extractedText.error ||
+                    "Could not extract readable text from this PDF. Upload a text-based PDF instead of a scanned image."
+                );
+            }
+
+            updateProgress('Analyzing...', 72);
             const feedback = await Promise.race([
                 ai.feedback(
                     uploadedFile.path,
-                    { jobTitle, jobDescription }
+                    { jobTitle, jobDescription, resumeText: extractedText.text }
                 ),
                 new Promise<never>((_, reject) =>
                     setTimeout(
@@ -101,7 +110,7 @@ const Upload = () => {
             }
 
             const parsedFeedback = JSON.parse(feedbackText) as Feedback;
-            updateProgress('Preparing your report...', 84);
+            updateProgress('Preparing your report...', 88);
             const uuid = generateUUID();
             const data = {
                 id: uuid,

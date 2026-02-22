@@ -3,6 +3,11 @@ export interface PdfConversionResult {
     error?: string;
 }
 
+export interface PdfTextExtractionResult {
+    text: string;
+    error?: string;
+}
+
 let pdfjsLib: any = null;
 let loadPromise: Promise<any> | null = null;
 
@@ -135,4 +140,71 @@ export async function convertPdfBlobToImage(
 ): Promise<PdfConversionResult> {
     const file = new File([blob], fileName, { type: "application/pdf" });
     return convertPdfToImage(file);
+}
+
+export async function extractPdfText(
+    file: File,
+    options?: { maxPages?: number; maxChars?: number }
+): Promise<PdfTextExtractionResult> {
+    try {
+        const lib = await loadPdfJs();
+        const arrayBuffer = await file.arrayBuffer();
+        const pdf = await lib.getDocument({
+            data: arrayBuffer,
+            disableWorker: true,
+            useSystemFonts: true,
+        }).promise;
+
+        const maxPages = Math.max(1, options?.maxPages ?? 1);
+        const lastPage = Math.min(pdf.numPages || 1, maxPages);
+        const pageChunks: string[] = [];
+
+        for (let pageNumber = 1; pageNumber <= lastPage; pageNumber += 1) {
+            const page = await pdf.getPage(pageNumber);
+            const textContent = await page.getTextContent();
+            const parts = Array.isArray(textContent?.items)
+                ? textContent.items
+                    .map((item: any) => (typeof item?.str === "string" ? item.str.trim() : ""))
+                    .filter(Boolean)
+                : [];
+
+            if (parts.length > 0) {
+                pageChunks.push(parts.join(" "));
+            }
+
+            if (typeof page.cleanup === "function") {
+                page.cleanup();
+            }
+        }
+
+        if (typeof pdf.destroy === "function") {
+            await pdf.destroy().catch(() => undefined);
+        }
+
+        const normalizedText = pageChunks
+            .join("\n")
+            .replace(/[ \t]{2,}/g, " ")
+            .replace(/\n{3,}/g, "\n\n")
+            .trim();
+        const maxChars = Math.max(1000, options?.maxChars ?? 8000);
+        const text =
+            normalizedText.length > maxChars
+                ? `${normalizedText.slice(0, maxChars)}\n\n[TRUNCATED]`
+                : normalizedText;
+
+        if (!text) {
+            return {
+                text: "",
+                error: "No readable text found in PDF.",
+            };
+        }
+
+        return { text };
+    } catch (err) {
+        console.error("[SkillSight:pdf2img] text extraction failed", err);
+        return {
+            text: "",
+            error: `Failed to extract PDF text: ${err}`,
+        };
+    }
 }

@@ -1,5 +1,4 @@
 ﻿import { createClient } from "@supabase/supabase-js";
-import { PDFParse } from "pdf-parse";
 import type { Route } from "./+types/api.analyze";
 
 type TipType = "good" | "improve";
@@ -57,6 +56,7 @@ type AnalyzeRequestBody = {
   message?: unknown;
   jobTitle?: unknown;
   jobDescription?: unknown;
+  resumeText?: unknown;
 };
 
 const FEEDBACK_SCHEMA = {
@@ -1384,6 +1384,7 @@ export async function action({ request }: Route.ActionArgs) {
   try {
     const body = (await request.json()) as AnalyzeRequestBody;
     const path = normalizeInputText(body.path, 255);
+    const clientResumeText = normalizeInputText(body.resumeText, 20000);
     if (!path) return Response.json({ error: "Missing path." }, { status: 400 });
     if (!isSafeStoragePath(path)) return Response.json({ error: "Invalid storage path." }, { status: 400 });
 
@@ -1445,19 +1446,40 @@ export async function action({ request }: Route.ActionArgs) {
       return Response.json({ error: "Forbidden path for current user." }, { status: 403 });
     }
 
-    const { data: fileBlob, error: downloadError } = await supabase.storage.from(bucket).download(path);
-    if (downloadError || !fileBlob) {
-      return Response.json({ error: "Failed to read uploaded resume from cloud storage." }, { status: 400 });
-    }
+    let resumeText = clientResumeText;
+    if (!resumeText) {
+      const { data: fileBlob, error: downloadError } = await supabase.storage.from(bucket).download(path);
+      if (downloadError || !fileBlob) {
+        return Response.json({ error: "Failed to read uploaded resume from cloud storage." }, { status: 400 });
+      }
 
-    const buffer = Buffer.from(await fileBlob.arrayBuffer());
-    const parser = new PDFParse({ data: buffer });
-    let resumeText = "";
-    try {
-      const pdf = await parser.getText({ first: maxResumePages });
-      resumeText = (pdf.text || "").trim();
-    } finally {
-      await parser.destroy().catch(() => undefined);
+      try {
+        const { PDFParse } = await import("pdf-parse");
+        const buffer = Buffer.from(await fileBlob.arrayBuffer());
+        const parser = new PDFParse({ data: buffer });
+        try {
+          const pdf = await parser.getText({ first: maxResumePages });
+          resumeText = (pdf.text || "").trim();
+        } finally {
+          await parser.destroy().catch(() => undefined);
+        }
+      } catch (parseError) {
+        const parseMessage = parseError instanceof Error ? parseError.message : String(parseError);
+        console.error("[SkillSight:api.analyze] PDF parse failed", {
+          message: parseMessage,
+          stack: parseError instanceof Error ? parseError.stack : undefined,
+        });
+        if (/DOMMatrix|@napi-rs\/canvas|pdfjs-dist|legacy\/build\/pdf\.mjs/i.test(parseMessage)) {
+          return Response.json(
+            {
+              error:
+                "Server PDF parsing is unavailable in this deployment runtime. Retry upload so client-side text extraction is included.",
+            },
+            { status: 500 },
+          );
+        }
+        return Response.json({ error: "Failed to extract text from resume PDF." }, { status: 400 });
+      }
     }
     if (!resumeText) return Response.json({ error: "Could not extract text from resume PDF." }, { status: 400 });
 

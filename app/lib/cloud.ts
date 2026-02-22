@@ -39,7 +39,7 @@ interface AppStore {
         ) => Promise<AIResponse | undefined>;
         feedback: (
             path: string,
-            payload: { jobTitle?: string; jobDescription?: string } | string
+            payload: { jobTitle?: string; jobDescription?: string; resumeText?: string } | string
         ) => Promise<AIResponse | undefined>;
         img2txt: (
             image: string | File | Blob,
@@ -495,7 +495,7 @@ export const useAppStore = create<AppStore>((set, get) => {
 
     const feedback = async (
         path: string,
-        feedbackPayload: { jobTitle?: string; jobDescription?: string } | string
+        feedbackPayload: { jobTitle?: string; jobDescription?: string; resumeText?: string } | string
     ): Promise<AIResponse | undefined> => {
         try {
             const accessToken = await requireAccessToken();
@@ -506,6 +506,7 @@ export const useAppStore = create<AppStore>((set, get) => {
                         path,
                         jobTitle: feedbackPayload.jobTitle || "",
                         jobDescription: feedbackPayload.jobDescription || "",
+                        resumeText: feedbackPayload.resumeText || "",
                     };
             const response = await fetch("/api/analyze", {
                 method: "POST",
@@ -723,7 +724,7 @@ export const useAppStore = create<AppStore>((set, get) => {
             ) => chat(prompt, imageURL, testMode, options),
             feedback: (
                 path: string,
-                payload: { jobTitle?: string; jobDescription?: string } | string
+                payload: { jobTitle?: string; jobDescription?: string; resumeText?: string } | string
             ) => feedback(path, payload),
             img2txt: (image: string | File | Blob, testMode?: boolean) =>
                 img2txt(image, testMode),
